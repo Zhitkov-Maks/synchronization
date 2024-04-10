@@ -1,13 +1,14 @@
 import os
 import sys
 import time
-from typing import Dict, Any
+from typing import Dict, Any, Callable
+from urllib.error import HTTPError
 
 from dotenv import dotenv_values
 from loguru import logger
-from requests import ConnectionError, ReadTimeout
+from requests import ConnectionError, ReadTimeout, HTTPError
 
-from util import create_folder_in_cloud, cloud_load, delete_file
+from util import AuthorizationError, check_path_exists, check_sleep_period
 from yandex_cloud import YandexCloud
 
 CONFIG = dotenv_values(".env")
@@ -20,33 +21,70 @@ logger.add(
 )
 
 
-def check_sleep_period(period: str) -> None:
+def connect_error(func: Callable) -> Callable:
+    """Декоратор для обработки возможных ошибок."""
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except HTTPError as err:
+            logger.error(err)
+        except (ConnectionError, ReadTimeout):
+            logger.error("Нет соединения. Проверьте подключение к интернету.")
+    return wrapper
+
+
+@connect_error
+def delete_file(cloud: Any, file: str) -> bool:
+    """Функция для запроса на удаление файла.
+
+    :param cloud: Облако для удаления
+    :param file: Имя файла для удаления.
+    :return bool: Возвращаем True, нужно для подсчета удаленных файлов.
     """
-    Проверяем что в конфигурации указан правильный период времени,
-    через который будет проходить синхронизация.
+    cloud.delete(file)
+    logger.info(f"Файл {file}, был удален.")
+    return True
 
-    :param period: Период который указан в файле dotenv.
+
+@connect_error
+def cloud_load(
+        cloud: Any,
+        path_on_pc: str,
+        file: str,
+        reload=False
+) -> bool:
+    """Функция для запроса на сохранение файла. Нужна для отлова возможных ошибок.
+
+    :param cloud: Облако для удаления.
+    :param file: Имя файла для удаления.
+    :param path_on_pc: Путь к файлу на пк.
+    :param reload: Нужен, чтобы использовать одну функцию для сохранения и перезаписи.
+    :return bool: Возвращаем True, нужно для подсчета удаленных файлов.
     """
-    if not period.isdigit():
-        logger.error(
-            "Неверно указан период синхронизации, это должно быть целое число(измерение в секундах)."
-        )
-        sys.exit(1)
+    cloud.load(path_on_pc, file) if not reload else cloud.reload(path_on_pc, file)
+    logger.info(f"Файл {file}, был {'сохранен' if not reload else 'перезаписан'}.")
+    return True
 
 
-def check_path_exists(path: str) -> None:
+@connect_error
+def create_folder_in_cloud(cloud: Any) -> None:
     """
-    Проверяем существует ли путь указанный в dotenv.
-    Если нет, то завершаем работу приложения.
+    Функция для создания папки в облаке. Заодно сразу проверку проходит указанный токен.
+    Если указанной папки не существует, то она будет создана, если папка уже есть, то будет
+    показан лог о том что папка уже существует. Если неверно указан токен, то приложение будет
+    остановлено.
 
-    :param path: Путь к папке, которую нужно синхронизировать.
+    :param cloud: Облако в котором нужно создать папку.
     """
-    check: bool = os.path.exists(path)
-    if not check:
-        logger.error(f"Указанный путь к {path} не существует. Введите корректный путь.")
-        sys.exit(1)
+    try:
+        cloud.create_folder_cloud()
+    except HTTPError as err:
+        logger.error(err)
+        if isinstance(err, AuthorizationError):
+            sys.exit(1)
 
 
+@connect_error
 def synchronization(
     path_on_pc: str,
     cloud: Any
@@ -62,35 +100,32 @@ def synchronization(
     download_files: int = 0
     deleted_files: int = 0
     rewrite_files: int = 0
-    try:
-        files_cloud: Dict[str, float] = cloud.get_info()
+    files_cloud: Dict[str, float] = cloud.get_info()
 
-        # Проходимся циклом по списку файлов которые есть на пк в нашей папке
-        for file in os.listdir(path_on_pc):
-            modified: float = os.path.getmtime(f"{path_on_pc}/{file}")
-            file_cloud: float | None = files_cloud.pop(file) if file in files_cloud else None
+    # Проходимся циклом по списку файлов которые есть на пк в нашей папке
+    for file in os.listdir(path_on_pc):
+        modified: float = os.path.getmtime(f"{path_on_pc}/{file}")
+        file_cloud: float | None = files_cloud.pop(file) if file in files_cloud else None
 
-            # Файла нет в облаке, значит сохраняем его
-            if not file_cloud:
-                result: bool = cloud_load(cloud, path_on_pc, file, logger)
-                download_files += 1 if result else 0
+        # Файла нет в облаке, значит сохраняем его
+        if not file_cloud:
+            result: bool = cloud_load(cloud, path_on_pc, file)
+            download_files += 1 if result else 0
 
-            # Дата изменения в облаке меньше чем в папке на пк, значит перезаписываем
-            elif file_cloud and modified > file_cloud:
-                result: bool = cloud_load(cloud, path_on_pc, file, logger, reload=True)
-                rewrite_files += 1 if result else 0
+        # Дата изменения в облаке меньше чем в папке на пк, значит перезаписываем
+        elif file_cloud and modified > file_cloud:
+            result: bool = cloud_load(cloud, path_on_pc, file, reload=True)
+            rewrite_files += 1 if result else 0
 
-        # Если в словаре еще остались файлы, значит их нужно удалить, так как на пк их нет.
-        if len(files_cloud) > 0:
-            for filename in files_cloud.keys():
-                result: bool = delete_file(cloud, filename, logger)
-                deleted_files += 1 if result else 0
+    # Если в словаре еще остались файлы, значит их нужно удалить, так как на пк их нет.
+    if len(files_cloud) > 0:
+        for filename in files_cloud.keys():
+            result: bool = delete_file(cloud, filename)
+            deleted_files += 1 if result else 0
 
-        logger.info(
-            f"Загружено: {download_files}, Перезаписано: {rewrite_files}, Удалено: {deleted_files}"
-        )
-    except (ConnectionError, ReadTimeout):
-        logger.error("Нет соединения, проверьте подключение.")
+    logger.info(
+        f"Загружено: {download_files}, Перезаписано: {rewrite_files}, Удалено: {deleted_files}"
+    )
 
 
 def main():
@@ -107,14 +142,15 @@ def main():
     yandex: YandexCloud = YandexCloud(token, name_folder_cloud)
 
     # При запуске проверяем наличие указанной папки в облаке, если ее нет то она будет создана
-    create_folder_in_cloud(yandex, name_folder_cloud, logger)
+    create_folder_in_cloud(yandex)
 
     # Небольшие проверки для корректности работы.
-    check_path_exists(path_to_folder_on_pc)
-    check_sleep_period(sleep_period)
+    check_path_exists(path_to_folder_on_pc, logger)
+    check_sleep_period(sleep_period, logger)
 
     while True:
-        logger.info("Запущен процесс синхронизации...")
+        logger.info(f"Запущен процесс синхронизации директории "
+                    f"{path_to_folder_on_pc} и папка {name_folder_cloud} в облаке.")
         synchronization(path_to_folder_on_pc, yandex)
         logger.info("Синхронизация завершена!")
         time.sleep(int(sleep_period))
