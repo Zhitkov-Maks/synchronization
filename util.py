@@ -64,3 +64,6 @@ def func_error_logging(name: str, args: tuple, logger) -> None:
         logger.error(
             f"Файл {args[-1]} не был удален. Проверьте соединение с интернетом."
         )
+
+    else:
+        logger.error("Ошибка соединения. Проверьте соединение с интернетом.")
