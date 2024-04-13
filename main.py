@@ -59,29 +59,35 @@ def delete_file(cloud: Any, file: str) -> bool:
 
 @connect_error
 def cloud_load(cloud: Any, path_on_pc: str, file: str, reload=False) -> bool:
-    """Функция для запроса на сохранение файла. Нужна для отлова возможных ошибок.
+    """Функция для запроса на сохранение файла.
+    Нужна для отлова возможных ошибок.
 
     :param cloud: Облако для удаления.
     :param file: Имя файла для удаления.
     :param path_on_pc: Путь к файлу на пк.
-    :param reload: Нужен, чтобы использовать одну функцию для сохранения и перезаписи.
+    :param reload: Нужен, чтобы использовать одну функцию
+        для сохранения и перезаписи.
     :return bool: Возвращаем True, нужно для подсчета удаленных файлов.
     """
     try:
-        cloud.load(path_on_pc, file) if not reload else cloud.reload(path_on_pc, file)
-        logger.info(f"Файл {file}, был {'сохранен' if not reload else 'перезаписан'}.")
+        cloud.load(path_on_pc, file) if not reload \
+            else cloud.reload(path_on_pc, file)
+        logger.info(
+            f"Файл {file}, был {'перезаписан' if reload else 'сохранен'}."
+        )
         return True
     except PermissionError:
         logger.error(
-            f"Файл {file} не был {'перезаписан' if reload else 'сохранен'}. Недостаточно прав!"
+            f"Файл {file} не был {'перезаписан' if reload else 'сохранен'}."
+            f"Недостаточно прав!"
         )
 
 
 @connect_error
 def create_folder_in_cloud(cloud: Any) -> None:
     """
-    Функция для создания папки в облаке. Заодно сразу проверку проходит указанный токен.
-    Если указанной папки не существует, то она будет создана.
+    Функция для создания папки в облаке. Заодно сразу проверку проходит
+    указанный токен. Если указанной папки не существует, то она будет создана.
     Если неверно указан токен, то приложение будет остановлено.
 
     :param cloud: Облако в котором нужно создать папку.
@@ -97,17 +103,19 @@ def create_folder_in_cloud(cloud: Any) -> None:
 @connect_error
 def synchronization(path_on_pc: str, cloud: Any) -> None:
     """
-    Функция сравнивает файлы на пк и в облаке, если файла нет в облаке или дата изменения файла
-    больше чем в облаке, то отправляем на сохранение в облако. Если файл есть в облаке, но нет
-    на пк, то файл в облаке удаляем.
+    Функция сравнивает файлы на пк и в облаке, если файла нет в облаке или дата
+    изменения файла больше чем в облаке, то отправляем на сохранение в облако.
+    Если файл есть в облаке, но нет на пк, то файл в облаке удаляем.
 
-    :param path_on_pc: Путь к папке на компьютере, с которой будет синхронизировано облако.
+    :param path_on_pc: Путь к папке на компьютере, с которой будет
+        синхронизировано облако.
     :param cloud: Экземпляр класса для работы с облаком.
     """
-    # Инициализируем переменные для подсчета сделанных операций при синхронизации
+    # Инициализируем переменные для подсчета операций при синхронизации
     download_files: int = 0
     deleted_files: int = 0
     rewritten_files: int = 0
+
     files_cloud: Dict[str, float] = cloud.get_info()
 
     # Проходимся циклом по списку файлов которые есть на пк в нашей папке
@@ -122,25 +130,29 @@ def synchronization(path_on_pc: str, cloud: Any) -> None:
             result: bool | None = cloud_load(cloud, path_on_pc, file)
             download_files += 1 if result else 0
 
-        # Дата изменения в облаке меньше чем в папке на пк, значит перезаписываем
+        # Дата изменения в облаке меньше чем в папке на пк, то на перезапись.
         elif file_cloud and modified > file_cloud:
-            result: bool | None = cloud_load(cloud, path_on_pc, file, 1)
+            reload: bool = True
+            result: bool | None = cloud_load(cloud, path_on_pc, file, reload)
             rewritten_files += 1 if result else 0
 
-    # Если в словаре еще остались файлы, значит их нужно удалить, так как на пк их нет.
+    # Если в словаре еще остались файлы, значит их нужно удалить из облака.
     if len(files_cloud) > 0:
         for filename in files_cloud.keys():
             result: bool | None = delete_file(cloud, filename)
             deleted_files += 1 if result else 0
 
     logger.info(
-        f"Загружено: {download_files}, Перезаписано: {rewritten_files}, Удалено: {deleted_files}"
+        f"Загружено: {download_files}. "
+        f"Перезаписано: {rewritten_files}. "
+        f"Удалено: {deleted_files}"
     )
 
 
 def main():
     """
-    Функция собирает переменные окружения, инициализирует объект и запускает бесконечный цикл.
+    Функция собирает переменные окружения, инициализирует объект и запускает
+    бесконечный цикл.
     """
     # Получаем нужные данные для работы.
     token: str = CONFIG.get("YANDEX_TOKEN")
@@ -151,7 +163,8 @@ def main():
     # Инициализируем yandex
     yandex: YandexCloud = YandexCloud(token, name_folder_cloud)
 
-    # При запуске проверяем наличие указанной папки в облаке, если ее нет то она будет создана
+    # При запуске проверяем наличие указанной папки в облаке,
+    # если ее нет то она будет создана
     create_folder_in_cloud(yandex)
 
     # Небольшие проверки для корректности работы.
@@ -164,7 +177,7 @@ def main():
             f"{path_to_folder_on_pc} и папка {name_folder_cloud} в облаке."
         )
         synchronization(path_to_folder_on_pc, yandex)
-        logger.info(f"Процесс синхронизации завершен!")
+        logger.info("Процесс синхронизации завершен!")
         time.sleep(int(sleep_period))
 
 

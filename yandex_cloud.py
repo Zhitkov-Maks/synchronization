@@ -2,6 +2,7 @@ import json
 import os.path
 from datetime import datetime as dt
 from typing import Dict
+from http import HTTPStatus
 
 import requests
 
@@ -38,10 +39,11 @@ class YandexCloud:
         :param url: Сформированный url для загрузки файла.
         :param path: Путь к файлу на пк.
         :param file_name: Имя файла который нужно сохранить.
-        :raise RequestError: Если запрос завершился кодом отличным от 200, пробрасываем исключение.
+        :raise RequestError: Если запрос завершился кодом отличным от 200,
+            пробрасываем исключение.
         """
         response = requests.get(url, headers=self._headers, timeout=30)
-        if response.status_code == 200:
+        if response.status_code == HTTPStatus.OK:
             data: json = response.json()
             path = os.path.join(path, file_name)
             with open(path, "rb") as file:
@@ -49,28 +51,31 @@ class YandexCloud:
         else:
             save_or_reload = "перезаписан" if reload else "сохранен"
             raise RequestError(
-                f"Файл: {file_name} не был {save_or_reload}, {response.json().get('message')}"
+                f"Файл: {file_name} не был {save_or_reload}, "
+                f"{response.json().get('message')}"
             )
 
     def load(self, path: str, file_name: str) -> None:
         """
-        Метод формирует url для загрузки файла, и отправляет непосредственно на сохранение.
+        Метод формирует url для загрузки файла, и отправляет непосредственно на
+            сохранение.
         :param path: Путь к файлу.
         :param file_name: Имя файла для сохранения в облаке.
         """
-        url: str = (
-            f"{self.url}/upload?path={self._name_folder_cloud}/{file_name}&overwrite=False"
-        )
+        url: str = (f"{self.url}/upload?path={self._name_folder_cloud}/"
+                    f"{file_name}&overwrite=False")
         self._save(url, path, file_name)
 
     def reload(self, path: str, file_name: str) -> None:
         """
-        Метод формирует url для перезаписи файла, и отправляет непосредственно на сохранение.
+        Метод формирует url для перезаписи файла, и отправляет непосредственно
+        на сохранение.
 
         :param path: Путь к файлу.
         :param file_name: Имя файла для сохранения в облаке.
         """
-        url = f"{self.url}/upload?path={self._name_folder_cloud}/{file_name}&overwrite=True"
+        url = (f"{self.url}/upload?path={self._name_folder_cloud}/"
+               f"{file_name}&overwrite=True")
         self._save(url, path, file_name, reload=True)
 
     def delete(self, filename: str) -> None:
@@ -78,31 +83,33 @@ class YandexCloud:
         Метод для удаления файла в облаке.
 
         :param filename: Имя удаляемого файла.
-        :raise RequestError: Если запрос завершился кодом отличным от 204, пробрасываем исключение.
+        :raise RequestError: Если запрос завершился кодом отличным от 204,
+            пробрасываем исключение.
         """
-        url: str = (
-            f"{self.url}?path={self._name_folder_cloud}/{filename}&force_async=False&permanently=False"
-        )
+        url: str = (f"{self.url}?path={self._name_folder_cloud}/"
+                    f"{filename}&force_async=False&permanently=False")
         response = requests.delete(url, headers=self._headers, timeout=20)
-        if response.status_code != 204:
+
+        if response.status_code != HTTPStatus.NO_CONTENT:
             raise RequestError(
-                f"Файл {filename} не был удален, {response.json().get('message')}"
+                f"Файл {filename} не был удален, "
+                f"{response.json().get('message')}"
             )
 
     def get_info(self) -> Dict[str, float]:
         """
         Метод для получения списка файлов в облачной папке.
 
-        :return dict: Возвращает словарь, где ключ имя файла, значение последнее изменение файла.
+        :return dict: Возвращает словарь, где ключ имя файла, значение
+            последнее изменение файла.
         :raise RequestError: Если запрос завершился кодом отличным от 200,
                 пробрасываем исключение с указанием ошибки.
         """
-        url: str = (
-            f"{self.url}?path={self._name_folder_cloud}&fields=items&limit=10000&preview_crop=True"
-        )
+        url: str = (f"{self.url}?path={self._name_folder_cloud}"
+                    f"&fields=items&limit=10000&preview_crop=True")
         response = requests.get(url, headers=self._headers, timeout=30)
 
-        if response.status_code == 200:
+        if response.status_code == HTTPStatus.OK:
             files: dict = {}
             for item in response.json()["_embedded"]["items"]:
                 files[item.get("name")] = dt.fromisoformat(
@@ -117,18 +124,24 @@ class YandexCloud:
         """
         Метод для создания папки в облаке. Заодно и проверяем авторизацию.
         Если вернет код 401, то нужно проверить работоспособность токена.
-        Если папка уже существует в облаке, то вернется код 409, но обрабатывать
-        его нет смысла так как нас это устраивает.
+        Если папка уже существует в облаке, то вернется код 409,
+        но обрабатывать его нет смысла так как нас это устраивает.
 
         :raise AuthorizationError: Прокидываем, если не рабочий токен.
-        :raise RequestError: Если запрос завершился кодом отличным от указанных.
+        :raise RequestError: Если запрос завершился кодом отличным от
+            указанных.
         """
         url = f"{self.url}?path={self._name_folder_cloud}"
         response = requests.put(url, headers=self._headers, timeout=30)
-        if response.status_code == 401:
+
+        if response.status_code == HTTPStatus.UNAUTHORIZED:
             raise AuthorizationError(
                 f"{response.json().get('message')} Проверьте ваш токен."
             )
 
-        elif response.status_code not in (201, 401, 409):
+        elif response.status_code not in (
+                HTTPStatus.CREATED,
+                HTTPStatus.UNAUTHORIZED,
+                HTTPStatus.CONFLICT,
+        ):
             raise RequestError(response.json().get("message"))
