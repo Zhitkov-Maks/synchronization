@@ -74,8 +74,8 @@ class YandexCloud:
         :param path: Путь к файлу.
         :param file_name: Имя файла для сохранения в облаке.
         """
-        url = (f"{self.url}/upload?path={self._name_folder_cloud}/"
-               f"{file_name}&overwrite=True")
+        url: str = (f"{self.url}/upload?path={self._name_folder_cloud}/"
+                    f"{file_name}&overwrite=True")
         self._save(url, path, file_name, reload=True)
 
     def delete(self, filename: str) -> None:
@@ -103,7 +103,7 @@ class YandexCloud:
         :return dict: Возвращает словарь, где ключ имя файла, значение
             последнее изменение файла.
         :raise RequestError: Если запрос завершился кодом отличным от 200,
-                пробрасываем исключение с указанием ошибки.
+            пробрасываем исключение с указанием ошибки.
         """
         url: str = (f"{self.url}?path={self._name_folder_cloud}"
                     f"&fields=items&limit=10000&preview_crop=True")
@@ -131,7 +131,7 @@ class YandexCloud:
         :raise RequestError: Если запрос завершился кодом отличным от
             указанных.
         """
-        url = f"{self.url}?path={self._name_folder_cloud}"
+        url: str = f"{self.url}?path={self._name_folder_cloud}"
         response = requests.put(url, headers=self._headers, timeout=30)
 
         if response.status_code == HTTPStatus.UNAUTHORIZED:
