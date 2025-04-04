@@ -2,11 +2,13 @@ import functools
 import os
 import sys
 import time
+from pathlib import Path
 from typing import Dict, Any, Callable
+import asyncio
 
-from dotenv import dotenv_values
+from dotenv import load_dotenv
 from loguru import logger
-from requests import ConnectionError, ReadTimeout, RequestException
+from aiohttp import ClientConnectionError, ConnectionTimeoutError, ClientError
 
 from util import (
     AuthorizationError,
@@ -17,8 +19,12 @@ from util import (
 )
 from yandex_cloud import YandexCloud
 
-CONFIG = dotenv_values(".env")
-PATH_LOG_FILE: str = CONFIG.get("PATH_FILE_LOG")
+
+env_path = Path(__file__).parent / '.env'
+load_dotenv(env_path)
+
+PATH_LOG_FILE = os.getenv('PATH_FILE_LOG')
+
 logger.add(
     f"{PATH_LOG_FILE}/cloud.log",
     format="synchronization {time} {level} {message}",
@@ -31,34 +37,36 @@ def connect_error(func: Callable) -> Callable:
     """Декоратор для обработки возможных ошибок."""
 
     @functools.wraps(func)
-    def wrapper(*args, **kwargs):
+    async def wrapper(*args, **kwargs):
         try:
-            return func(*args, **kwargs)
+            return await func(*args, **kwargs)
 
         except RequestError as err:
             logger.error(err)
 
-        except (ConnectionError, ReadTimeout):
-            func_error_logging(func.__name__, args, logger)
+        except (ClientConnectionError, ConnectionTimeoutError):
+            await func_error_logging(func.__name__, args, logger)
 
     return wrapper
 
 
 @connect_error
-def delete_file(cloud: Any, file: str) -> bool:
+async def delete_file(cloud: Any, file: str) -> bool:
     """Функция для запроса на удаление файла.
 
     :param cloud: Облако для удаления
     :param file: Имя файла для удаления.
     :return bool: Возвращаем True, нужно для подсчета удаленных файлов.
     """
-    cloud.delete(file)
+    await cloud.delete(file)
     logger.info(f"Файл {file}, был удален.")
     return True
 
 
 @connect_error
-def cloud_load(cloud: Any, path_on_pc: str, file: str, reload=False) -> bool:
+async def cloud_load(
+        cloud: YandexCloud, path_on_pc: str, file: str, reload=False
+) -> bool | None:
     """Функция для запроса на сохранение файла.
     Нужна для отлова возможных ошибок.
 
@@ -70,8 +78,8 @@ def cloud_load(cloud: Any, path_on_pc: str, file: str, reload=False) -> bool:
     :return bool: Возвращаем True, нужно для подсчета удаленных файлов.
     """
     try:
-        cloud.load(path_on_pc, file) if not reload \
-            else cloud.reload(path_on_pc, file)
+        await cloud.load(path_on_pc, file) if not reload \
+            else await cloud.reload(path_on_pc, file)
         logger.info(
             f"Файл {file}, был {'перезаписан' if reload else 'сохранен'}."
         )
@@ -84,105 +92,152 @@ def cloud_load(cloud: Any, path_on_pc: str, file: str, reload=False) -> bool:
 
 
 @connect_error
-def create_folder_in_cloud(cloud: Any) -> None:
+async def create_folder_in_cloud(cloud: Any, folder=None) -> None:
     """
     Функция для создания папки в облаке. Заодно сразу проверку проходит
     указанный токен. Если указанной папки не существует, то она будет создана.
     Если неверно указан токен, то приложение будет остановлено.
 
     :param cloud: Облако в котором нужно создать папку.
+
+    :param folder: Вложенная папка в облаке.
     """
     try:
-        cloud.create_folder_cloud()
-    except RequestException as err:
+        if folder is None:
+            await cloud.create_folder_cloud()
+        else:
+            await cloud.create_folder_cloud(folder)
+    except ClientError as err:
         logger.error(err)
         if isinstance(err, AuthorizationError):
             sys.exit(1)
 
 
 @connect_error
-def synchronization(path_on_pc: str, cloud: Any) -> None:
+async def synchronization(
+        path_on_pc: str, cloud: YandexCloud
+) -> tuple[int, int, int]:
     """
-    Функция сравнивает файлы на пк и в облаке, если файла нет в облаке или дата
-    изменения файла больше чем в облаке, то отправляем на сохранение в облако.
-    Если файл есть в облаке, но нет на пк, то файл в облаке удаляем.
+    Функция сравнивает файлы на пк и в облаке.
 
-    :param path_on_pc: Путь к папке на компьютере, с которой будет
-        синхронизировано облако.
-    :param cloud: Экземпляр класса для работы с облаком.
+    :param path_on_pc: Путь к папке на компьютере
+    :param cloud: Экземпляр класса для работы с облаком
+    :return: Кортеж с количеством
+    (загруженных, удаленных, перезаписанных) файлов
     """
-    # Инициализируем переменные для подсчета операций при синхронизации
     download_files: int = 0
     deleted_files: int = 0
     rewritten_files: int = 0
+    cloud_files: dict[str, float] = await cloud.get_info()
 
-    files_cloud: Dict[str, float] = cloud.get_info()
+    # Обрабатываем файлы и папки на ПК
+    tasks: list = []
+    for item in os.listdir(path_on_pc):
+        item_path = os.path.join(path_on_pc, item)
 
-    # Проходимся циклом по списку файлов которые есть на пк в нашей папке
-    for file in os.listdir(path_on_pc):
-        modified: float = os.path.getmtime(f"{path_on_pc}/{file}")
-        file_cloud: float | None = (
-            files_cloud.pop(file) if file in files_cloud else None
-        )
+        if os.path.isdir(item_path):
+            # Обработка папки - рекурсивный вызов
+            original_folder = cloud.name_folder_cloud
 
-        # Файла нет в облаке, значит сохраняем его
-        if not file_cloud:
-            result: bool | None = cloud_load(cloud, path_on_pc, file)
-            download_files += 1 if result else 0
+            # Создаем папку в облаке (если еще не существует)
+            if not await cloud.is_exists_folder(item):
+                await create_folder_in_cloud(cloud, item)
 
-        # Дата изменения в облаке меньше чем в папке на пк, то на перезапись.
-        elif file_cloud and modified > file_cloud:
-            reload: bool = True
-            result: bool | None = cloud_load(cloud, path_on_pc, file, reload)
-            rewritten_files += 1 if result else 0
+            cloud.name_folder_cloud = f"{cloud.name_folder_cloud}/{item}"
+            sub_download, sub_deleted, sub_rewritten = await synchronization(
+                item_path, cloud
+            )
+            download_files += sub_download
+            deleted_files += sub_deleted
+            rewritten_files += sub_rewritten
 
-    # Если в словаре еще остались файлы, значит их нужно удалить из облака.
-    if len(files_cloud) > 0:
-        for filename in files_cloud.keys():
-            result: bool | None = delete_file(cloud, filename)
-            deleted_files += 1 if result else 0
+            cloud.name_folder_cloud = original_folder
+            continue
 
-    logger.info(
-        f"Загружено: {download_files}. "
-        f"Перезаписано: {rewritten_files}. "
-        f"Удалено: {deleted_files}"
-    )
+        # Обработка файла
+        modified = os.path.getmtime(item_path)
+        cloud_mtime = cloud_files.pop(item, None)
+
+        if cloud_mtime is None:
+            # Файла нет в облаке - загружаем
+            tasks.append(cloud_load(cloud, path_on_pc, item))
+            download_files += 1
+
+        elif modified > cloud_mtime:
+            # Файл в облаке устарел - перезаписываем
+            tasks.append(cloud_load(cloud, path_on_pc, item, reload=True))
+            rewritten_files += 1
+
+    # Удаляем оставшиеся файлы в облаке (только файлы, не папки)
+    for filename in cloud_files:
+        path: str = os.path.join(path_on_pc, filename)
+        # Это так же работает если мы удалили всю папку на pc, то такой
+        # директории у нас не будет и будет запрос на удаление всей папки в
+        # облаке, что нам и нужно.
+        if not os.path.isdir(path):
+            tasks.append(delete_file(cloud, filename))
+            deleted_files += 1
+
+    await asyncio.gather(*tasks)
+    return download_files, deleted_files, rewritten_files
 
 
-def main():
+async def main():
     """
     Функция собирает переменные окружения, инициализирует объект и запускает
     бесконечный цикл.
     """
     # Получаем нужные данные для работы.
-    token: str = CONFIG.get("YANDEX_TOKEN")
-    sleep_period: str = CONFIG.get("SYNCHRONIZATION_PERIOD")
-    path_to_folder_on_pc: str = CONFIG.get("PATH_TO_FOLDER_ON_PC")
-    name_folder_cloud: str = CONFIG.get("NAME_FOLDER_CLOUD")
+    token: str =  os.getenv("YANDEX_TOKEN")
+    sleep_period: str = os.getenv("SYNCHRONIZATION_PERIOD")
+    path_to_folder_on_pc: str = os.getenv("PATH_TO_FOLDER_ON_PC")
+    name_folder_cloud: str = os.getenv("NAME_FOLDER_CLOUD")
 
     # Инициализируем yandex
     yandex: YandexCloud = YandexCloud(token, name_folder_cloud)
 
     # При запуске проверяем наличие указанной папки в облаке,
     # если ее нет то она будет создана
-    create_folder_in_cloud(yandex)
+    await create_folder_in_cloud(yandex)
 
     # Небольшие проверки для корректности работы.
-    check_path_exists(path_to_folder_on_pc, logger)
-    check_sleep_period(sleep_period, logger)
+    await check_path_exists(path_to_folder_on_pc, logger)
+    await check_sleep_period(sleep_period, logger)
 
     while True:
-        logger.info(
-            f"Запущен процесс синхронизации директории "
-            f"{path_to_folder_on_pc} и папка {name_folder_cloud} в облаке."
-        )
-        synchronization(path_to_folder_on_pc, yandex)
-        logger.info("Процесс синхронизации завершен!")
-        time.sleep(int(sleep_period))
+        start = time.time()
+        try:
+            yandex.name_folder_cloud = name_folder_cloud
+            logger.info(
+                f"Запущен процесс синхронизации директории "
+                f"{path_to_folder_on_pc} и папка {name_folder_cloud} в облаке."
+            )
+            downloaded, removed, rewrite  = await synchronization(
+                path_to_folder_on_pc,
+                yandex
+            )
+            logger.info(
+                f"Загружено: {downloaded}. "
+                f"Перезаписано: {rewrite}. "
+                f"Удалено: {removed}"
+            )
+
+        except asyncio.TimeoutError:
+            logger.error("TimeOutError, файл не успел загрузиться.")
+
+        except ConnectionError as err:
+            logger.error(err)
+
+        finally:
+            logger.info(
+                f"Процесс синхронизации завершен! Время выполнения "
+                f"{time.time() - start}"
+            )
+            await asyncio.sleep(int(sleep_period) - (time.time() - start))
 
 
 if __name__ == "__main__":
     try:
-        main()
+        asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Приложение принудительно остановлено.")
+        logger.info("Приложение было принудительно остановлено.")

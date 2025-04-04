@@ -1,12 +1,27 @@
-import json
 import os.path
 from datetime import datetime as dt
+from pathlib import Path
 from typing import Dict
 from http import HTTPStatus
 
-import requests
+import aiohttp
+import aiofiles
+from aiohttp import FormData, ClientTimeout
+from dotenv import load_dotenv
+from loguru import logger
 
 from util import AuthorizationError, RequestError
+
+env_path = Path(__file__).parent / '.env'
+load_dotenv(env_path)
+PATH_LOG_FILE = os.getenv('PATH_FILE_LOG')
+
+logger.add(
+    f"{PATH_LOG_FILE}/cloud.log",
+    format="synchronization {time} {level} {message}",
+    level="INFO",
+    rotation="100 MB",
+)
 
 
 class YandexCloud:
@@ -24,49 +39,86 @@ class YandexCloud:
     url = "https://cloud-api.yandex.net/v1/disk/resources"
 
     def __init__(self, token: str, name_folder_cloud: str):
-        self._name_folder_cloud = name_folder_cloud
+        self.name_folder_cloud = name_folder_cloud
         self._headers = {
             "Content-type": "application/json",
             "Accept": "application/json",
             "Authorization": f"OAuth {token}",
         }
 
-    def _save(self, url: str, path: str, file_name: str, reload=False) -> None:
+    async def _save(
+            self, url: str, path: str, file_name: str, reload=False
+    ) -> None:
         """
-        Метод для сохранения файла в облаке, нужен для методов load и reload,
-        так как методы практически одинаковые.
+        Метод для сохранения файла в облаке, нужен для методов load и reload.
 
         :param url: Сформированный url для загрузки файла.
         :param path: Путь к файлу на пк.
         :param file_name: Имя файла который нужно сохранить.
-        :raise RequestError: Если запрос завершился кодом отличным от 200,
-            пробрасываем исключение.
+        :raise RequestError: Если запрос завершился кодом отличным от 200.
         """
-        response = requests.get(url, headers=self._headers, timeout=30)
-        if response.status_code == HTTPStatus.OK:
-            data: json = response.json()
-            path = os.path.join(path, file_name)
-            with open(path, "rb") as file:
-                requests.put(data["href"], files={"file": file}, timeout=60)
-        else:
-            save_or_reload = "перезаписан" if reload else "сохранен"
-            raise RequestError(
-                f"Файл: {file_name} не был {save_or_reload}, "
-                f"{response.json().get('message')}"
-            )
+        # Настройки загрузки
+        timeout: ClientTimeout = aiohttp.ClientTimeout(
+            total=3600, sock_connect=60, sock_read=600
+        )
 
-    def load(self, path: str, file_name: str) -> None:
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, headers=self._headers) as response:
+                    if response.status != HTTPStatus.OK:
+                        error = await response.text()
+                        raise RequestError(
+                            f"Ошибка получения URL загрузки: {error}"
+                        )
+
+                    upload_data: dict = await response.json()
+                    upload_url: str = upload_data.get("href")
+
+                    if not upload_url:
+                        raise RequestError("Не получен URL для загрузки")
+
+                file_path = os.path.join(path, file_name)
+                file_size = os.path.getsize(file_path)
+                logger.info(
+                    f"Начинаем загрузку {file_name} "
+                    f"({file_size / 1024 / 1024:.2f} MB)"
+                )
+
+                headers = {
+                    'Content-Type': 'application/octet-stream',
+                    'Content-Length': str(file_size),
+                    'Content-Disposition': f'attachment; filename="{file_name}"'
+                }
+
+                async with aiofiles.open(file_path, 'rb') as f:
+                    async with session.put(
+                            upload_url,
+                            data=f,
+                            headers=headers,
+                            timeout=timeout
+                    ) as upload_response:
+                        if upload_response.status not in (
+                        HTTPStatus.OK, HTTPStatus.CREATED):
+                            error = await upload_response.text()
+                            raise RequestError(
+                                f"Ошибка загрузки файла: {error}"
+                            )
+
+        except aiohttp.ClientError as e:
+            raise RequestError(f"Сетевая ошибка: {str(e)}")
+
+    async def load(self, path: str, file_name: str) -> None:
         """
         Метод формирует url для загрузки файла, и отправляет непосредственно на
             сохранение.
         :param path: Путь к файлу.
         :param file_name: Имя файла для сохранения в облаке.
         """
-        url: str = (f"{self.url}/upload?path={self._name_folder_cloud}/"
+        url: str = (f"{self.url}/upload?path={self.name_folder_cloud}/"
                     f"{file_name}&overwrite=False")
-        self._save(url, path, file_name)
+        await self._save(url, path, file_name)
 
-    def reload(self, path: str, file_name: str) -> None:
+    async def reload(self, path: str, file_name: str) -> None:
         """
         Метод формирует url для перезаписи файла, и отправляет непосредственно
         на сохранение.
@@ -74,11 +126,11 @@ class YandexCloud:
         :param path: Путь к файлу.
         :param file_name: Имя файла для сохранения в облаке.
         """
-        url: str = (f"{self.url}/upload?path={self._name_folder_cloud}/"
+        url: str = (f"{self.url}/upload?path={self.name_folder_cloud}/"
                     f"{file_name}&overwrite=True")
-        self._save(url, path, file_name, reload=True)
+        await self._save(url, path, file_name, reload=True)
 
-    def delete(self, filename: str) -> None:
+    async def delete(self, filename: str) -> None:
         """
         Метод для удаления файла в облаке.
 
@@ -86,17 +138,23 @@ class YandexCloud:
         :raise RequestError: Если запрос завершился кодом отличным от 204,
             пробрасываем исключение.
         """
-        url: str = (f"{self.url}?path={self._name_folder_cloud}/"
+        url: str = (f"{self.url}?path={self.name_folder_cloud}/"
                     f"{filename}&force_async=False&permanently=False")
-        response = requests.delete(url, headers=self._headers, timeout=20)
 
-        if response.status_code != HTTPStatus.NO_CONTENT:
-            raise RequestError(
-                f"Файл {filename} не был удален, "
-                f"{response.json().get('message')}"
-            )
+        async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(60)
+        ) as client:
+            async with client.delete(
+                    url=url, headers=self._headers) as response:
+                        if response.status not in [
+                            HTTPStatus.NO_CONTENT, HTTPStatus.ACCEPTED
+                        ]:
+                            raise RequestError(
+                                f"Файл {filename} не был удален, "
+                                f"{(await response.json()).get('message')}"
+                            )
 
-    def get_info(self) -> Dict[str, float]:
+    async def get_info(self) -> Dict[str, float]:
         """
         Метод для получения списка файлов в облачной папке.
 
@@ -105,22 +163,42 @@ class YandexCloud:
         :raise RequestError: Если запрос завершился кодом отличным от 200,
             пробрасываем исключение с указанием ошибки.
         """
-        url: str = (f"{self.url}?path={self._name_folder_cloud}"
+        url: str = (f"{self.url}?path={self.name_folder_cloud}"
                     f"&fields=items&limit=10000&preview_crop=True")
-        response = requests.get(url, headers=self._headers, timeout=30)
+        async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(60)
+        ) as client:
+            async with client.get(
+                    url=url,
+                    headers=self._headers
+            ) as response:
+                if response.status == HTTPStatus.OK:
+                    files: dict = {}
+                    for item in (await response.json())["_embedded"]["items"]:
+                        files[item.get("name")] = dt.fromisoformat(
+                            item.get("modified")
+                        ).timestamp()
+                    return files
 
-        if response.status_code == HTTPStatus.OK:
-            files: dict = {}
-            for item in response.json()["_embedded"]["items"]:
-                files[item.get("name")] = dt.fromisoformat(
-                    item.get("modified")
-                ).timestamp()
-            return files
+                else:
+                    raise RequestError(
+                        f"{(await response.json()).get('message')}"
+                    )
 
-        else:
-            raise RequestError(f"{response.json().get('message')}")
+    async def is_exists_folder(self, folder) -> bool:
+        url: str = f"{self.url}?path={self.name_folder_cloud}/{folder}"
+        async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(60)
+        ) as client:
+            async with client.get(
+                    url=url,
+                    headers=self._headers
+            ) as response:
+                if response.status == HTTPStatus.OK:
+                    return True
+                return False
 
-    def create_folder_cloud(self) -> None:
+    async def create_folder_cloud(self, folder=None) -> None:
         """
         Метод для создания папки в облаке. Заодно и проверяем авторизацию.
         Если вернет код 401, то нужно проверить работоспособность токена.
@@ -131,17 +209,27 @@ class YandexCloud:
         :raise RequestError: Если запрос завершился кодом отличным от
             указанных.
         """
-        url: str = f"{self.url}?path={self._name_folder_cloud}"
-        response = requests.put(url, headers=self._headers, timeout=30)
+        url: str = (f"{self.url}?path={self.name_folder_cloud}"
+                    f"{f"/{folder}"if folder else ''}")
 
-        if response.status_code == HTTPStatus.UNAUTHORIZED:
-            raise AuthorizationError(
-                f"{response.json().get('message')} Проверьте ваш токен."
-            )
+        async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(60)
+        ) as client:
+            async with client.put(
+                    url=url,
+                    headers=self._headers
+            ) as response:
 
-        elif response.status_code not in (
-                HTTPStatus.CREATED,
-                HTTPStatus.UNAUTHORIZED,
-                HTTPStatus.CONFLICT,
-        ):
-            raise RequestError(response.json().get("message"))
+                if response.status == HTTPStatus.UNAUTHORIZED:
+                    raise AuthorizationError(
+                        f"{
+                        (await response.json()).get('message')
+                        } Проверьте ваш токен."
+                    )
+
+                elif response.status not in (
+                        HTTPStatus.CREATED,
+                        HTTPStatus.UNAUTHORIZED,
+                        HTTPStatus.CONFLICT,
+                ):
+                    raise RequestError((await response.json()).get("message"))

@@ -1,18 +1,18 @@
 import os
 import sys
 
-from requests import RequestException
+from aiohttp import ClientError
 
 
-class AuthorizationError(RequestException):
+class AuthorizationError(ClientError):
     pass
 
 
-class RequestError(RequestException):
+class RequestError(ClientError):
     pass
 
 
-def check_sleep_period(period: str, logger) -> None:
+async def check_sleep_period(period: str, logger) -> None:
     """
     Проверяем что в конфигурации указан правильный период времени(целое число),
     через который будет проходить синхронизация.
@@ -28,7 +28,7 @@ def check_sleep_period(period: str, logger) -> None:
         sys.exit(1)
 
 
-def check_path_exists(path: str, logger) -> None:
+async def check_path_exists(path: str, logger) -> None:
     """
     Проверяем существует ли путь указанный в dotenv.
     Если нет, то завершаем работу приложения.
@@ -43,7 +43,7 @@ def check_path_exists(path: str, logger) -> None:
         sys.exit(1)
 
 
-def func_error_logging(name: str, args: tuple, logger) -> None:
+async def func_error_logging(name: str, args: tuple, logger) -> None:
     """
     Функция для записи лога об ошибке в зависимости от типа
     операции(удаление, сохранение, перезапись).
@@ -72,4 +72,4 @@ def func_error_logging(name: str, args: tuple, logger) -> None:
         )
 
     else:
-        logger.error("Ошибка соединения. Проверьте соединение с интернетом.")
+        raise ConnectionError("Нет соединения с интернетом.")
