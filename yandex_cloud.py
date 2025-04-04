@@ -6,7 +6,7 @@ from http import HTTPStatus
 
 import aiohttp
 import aiofiles
-from aiohttp import FormData, ClientTimeout
+from aiohttp import ClientTimeout
 from dotenv import load_dotenv
 from loguru import logger
 
@@ -46,9 +46,7 @@ class YandexCloud:
             "Authorization": f"OAuth {token}",
         }
 
-    async def _save(
-            self, url: str, path: str, file_name: str, reload=False
-    ) -> None:
+    async def _save(self, url: str, path: str, file_name: str) -> None:
         """
         Метод для сохранения файла в облаке, нужен для методов load и reload.
 
@@ -59,7 +57,7 @@ class YandexCloud:
         """
         # Настройки загрузки
         timeout: ClientTimeout = aiohttp.ClientTimeout(
-            total=3600, sock_connect=60, sock_read=600
+            total=1800, sock_connect=60, sock_read=600
         )
 
         try:
@@ -84,18 +82,10 @@ class YandexCloud:
                     f"({file_size / 1024 / 1024:.2f} MB)"
                 )
 
-                headers = {
-                    'Content-Type': 'application/octet-stream',
-                    'Content-Length': str(file_size),
-                    'Content-Disposition': f'attachment; filename="{file_name}"'
-                }
-
                 async with aiofiles.open(file_path, 'rb') as f:
                     async with session.put(
                             upload_url,
-                            data=f,
-                            headers=headers,
-                            timeout=timeout
+                            data={"file": await f.read()},
                     ) as upload_response:
                         if upload_response.status not in (
                         HTTPStatus.OK, HTTPStatus.CREATED):
@@ -103,7 +93,6 @@ class YandexCloud:
                             raise RequestError(
                                 f"Ошибка загрузки файла: {error}"
                             )
-
         except aiohttp.ClientError as e:
             raise RequestError(f"Сетевая ошибка: {str(e)}")
 
@@ -128,7 +117,7 @@ class YandexCloud:
         """
         url: str = (f"{self.url}/upload?path={self.name_folder_cloud}/"
                     f"{file_name}&overwrite=True")
-        await self._save(url, path, file_name, reload=True)
+        await self._save(url, path, file_name)
 
     async def delete(self, filename: str) -> None:
         """

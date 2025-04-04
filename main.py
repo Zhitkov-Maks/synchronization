@@ -1,14 +1,14 @@
+import asyncio
 import functools
 import os
 import sys
 import time
 from pathlib import Path
 from typing import Any, Callable
-import asyncio
 
+from aiohttp import ClientConnectionError, ConnectionTimeoutError, ClientError
 from dotenv import load_dotenv
 from loguru import logger
-from aiohttp import ClientConnectionError, ConnectionTimeoutError, ClientError
 
 from util import (
     AuthorizationError,
@@ -18,7 +18,6 @@ from util import (
     func_error_logging,
 )
 from yandex_cloud import YandexCloud
-
 
 env_path = Path(__file__).parent / '.env'
 load_dotenv(env_path)
@@ -114,9 +113,7 @@ async def create_folder_in_cloud(cloud: Any, folder=None) -> None:
 
 
 @connect_error
-async def synchronization(
-        path_on_pc: str, cloud: YandexCloud
-) -> tuple[int, int, int]:
+async def synchronization(path_on_pc: str, cloud: YandexCloud):
     """
     Функция сравнивает файлы на пк и в облаке.
 
@@ -125,9 +122,6 @@ async def synchronization(
     :return: Кортеж с количеством
     (загруженных, удаленных, перезаписанных) файлов
     """
-    download_files: int = 0
-    deleted_files: int = 0
-    rewritten_files: int = 0
     cloud_files: dict[str, float] = await cloud.get_info()
 
     # Обрабатываем файлы и папки на ПК
@@ -144,13 +138,7 @@ async def synchronization(
                 await create_folder_in_cloud(cloud, item)
 
             cloud.name_folder_cloud = f"{cloud.name_folder_cloud}/{item}"
-            sub_download, sub_deleted, sub_rewritten = await synchronization(
-                item_path, cloud
-            )
-            download_files += sub_download
-            deleted_files += sub_deleted
-            rewritten_files += sub_rewritten
-
+            await synchronization(item_path, cloud)
             cloud.name_folder_cloud = original_folder
             continue
 
@@ -161,12 +149,10 @@ async def synchronization(
         if cloud_time is None:
             # Файла нет в облаке - загружаем
             tasks.append(cloud_load(cloud, path_on_pc, item))
-            download_files += 1
 
         elif modified > cloud_time:
             # Файл в облаке устарел - перезаписываем
             tasks.append(cloud_load(cloud, path_on_pc, item, reload=True))
-            rewritten_files += 1
 
     # Удаляем оставшиеся файлы в облаке (только файлы, не папки)
     for filename in cloud_files:
@@ -176,10 +162,9 @@ async def synchronization(
         # облаке, что нам и нужно.
         if not os.path.isdir(path):
             tasks.append(delete_file(cloud, filename))
-            deleted_files += 1
 
     await asyncio.gather(*tasks)
-    return download_files, deleted_files, rewritten_files
+    return
 
 
 async def main():
@@ -212,15 +197,7 @@ async def main():
                 f"Запущен процесс синхронизации директории "
                 f"{path_to_folder_on_pc} и папка {name_folder_cloud} в облаке."
             )
-            downloaded, removed, rewrite  = await synchronization(
-                path_to_folder_on_pc,
-                yandex
-            )
-            logger.info(
-                f"Загружено: {downloaded}. "
-                f"Перезаписано: {rewrite}. "
-                f"Удалено: {removed}"
-            )
+            await synchronization(path_to_folder_on_pc, yandex)
 
         except asyncio.TimeoutError:
             logger.error("TimeOutError, файл не успел загрузиться.")
