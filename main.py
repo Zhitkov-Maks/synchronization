@@ -3,7 +3,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Dict, Any, Callable
+from typing import Any, Callable
 import asyncio
 
 from dotenv import load_dotenv
@@ -156,14 +156,14 @@ async def synchronization(
 
         # Обработка файла
         modified = os.path.getmtime(item_path)
-        cloud_mtime = cloud_files.pop(item, None)
+        cloud_time = cloud_files.pop(item, None)
 
-        if cloud_mtime is None:
+        if cloud_time is None:
             # Файла нет в облаке - загружаем
             tasks.append(cloud_load(cloud, path_on_pc, item))
             download_files += 1
 
-        elif modified > cloud_mtime:
+        elif modified > cloud_time:
             # Файл в облаке устарел - перезаписываем
             tasks.append(cloud_load(cloud, path_on_pc, item, reload=True))
             rewritten_files += 1
