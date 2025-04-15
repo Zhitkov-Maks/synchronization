@@ -10,6 +10,7 @@ from aiohttp import ClientConnectionError, ConnectionTimeoutError, ClientError
 from dotenv import load_dotenv
 from loguru import logger
 
+from cloud import Cloud
 from util import (
     AuthorizationError,
     check_path_exists,
@@ -57,7 +58,7 @@ async def delete_file(cloud: Any, file: str) -> bool:
     :param file: Имя файла для удаления.
     :return bool: Возвращаем True, нужно для подсчета удаленных файлов.
     """
-    await cloud.delete(file)
+    await cloud.delete_file(file)
     logger.info(f"Файл {file}, был удален.")
     return True
 
@@ -77,8 +78,8 @@ async def cloud_load(
     :return bool: Возвращаем True, нужно для подсчета удаленных файлов.
     """
     try:
-        await cloud.load(path_on_pc, file) if not reload \
-            else await cloud.reload(path_on_pc, file)
+        await cloud.upload_file(path_on_pc, file) if not reload \
+            else await cloud.update_file(path_on_pc, file)
         logger.info(
             f"Файл {file}, был {'перезаписан' if reload else 'сохранен'}."
         )
@@ -103,9 +104,9 @@ async def create_folder_in_cloud(cloud: Any, folder=None) -> None:
     """
     try:
         if folder is None:
-            await cloud.create_folder_cloud()
+            await cloud.create_folder()
         else:
-            await cloud.create_folder_cloud(folder)
+            await cloud.create_folder(folder)
     except ClientError as err:
         logger.error(err)
         if isinstance(err, AuthorizationError):
@@ -113,7 +114,7 @@ async def create_folder_in_cloud(cloud: Any, folder=None) -> None:
 
 
 @connect_error
-async def synchronization(path_on_pc: str, cloud: YandexCloud):
+async def synchronization(path_on_pc: str, cloud: Cloud):
     """
     Функция сравнивает файлы на пк и в облаке.
 
@@ -179,7 +180,7 @@ async def main():
     name_folder_cloud: str = os.getenv("NAME_FOLDER_CLOUD")
 
     # Инициализируем yandex
-    yandex: YandexCloud = YandexCloud(token, name_folder_cloud)
+    yandex: Cloud = YandexCloud(token, name_folder_cloud)
 
     # При запуске проверяем наличие указанной папки в облаке,
     # если ее нет то она будет создана

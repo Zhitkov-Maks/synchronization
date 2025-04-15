@@ -1,4 +1,5 @@
 import os.path
+from abc import ABC
 from datetime import datetime as dt
 from pathlib import Path
 from typing import Dict
@@ -10,6 +11,7 @@ from aiohttp import ClientTimeout
 from dotenv import load_dotenv
 from loguru import logger
 
+from cloud import Cloud
 from util import AuthorizationError, RequestError
 
 env_path = Path(__file__).parent / '.env'
@@ -24,7 +26,7 @@ logger.add(
 )
 
 
-class YandexCloud:
+class YandexCloud(Cloud):
     """
     Класс для работы с яндекс облаком.
 
@@ -96,7 +98,7 @@ class YandexCloud:
         except aiohttp.ClientError as e:
             raise RequestError(f"Сетевая ошибка: {str(e)}")
 
-    async def load(self, path: str, file_name: str) -> None:
+    async def upload_file(self, path: str, file_name: str) -> None:
         """
         Метод формирует url для загрузки файла, и отправляет непосредственно на
             сохранение.
@@ -107,7 +109,7 @@ class YandexCloud:
                     f"{file_name}&overwrite=False")
         await self._save(url, path, file_name)
 
-    async def reload(self, path: str, file_name: str) -> None:
+    async def update_file(self, path: str, file_name: str) -> None:
         """
         Метод формирует url для перезаписи файла, и отправляет непосредственно
         на сохранение.
@@ -119,7 +121,7 @@ class YandexCloud:
                     f"{file_name}&overwrite=True")
         await self._save(url, path, file_name)
 
-    async def delete(self, filename: str) -> None:
+    async def delete_file(self, filename: str) -> None:
         """
         Метод для удаления файла в облаке.
 
@@ -187,7 +189,7 @@ class YandexCloud:
                     return True
                 return False
 
-    async def create_folder_cloud(self, folder=None) -> None:
+    async def create_folder(self, folder=None) -> None:
         """
         Метод для создания папки в облаке. Заодно и проверяем авторизацию.
         Если вернет код 401, то нужно проверить работоспособность токена.
