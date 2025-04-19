@@ -1,32 +1,26 @@
 import os.path
-from abc import ABC
 from datetime import datetime as dt
-from pathlib import Path
 from typing import Dict
 from http import HTTPStatus
 
 import aiohttp
 import aiofiles
 from aiohttp import ClientTimeout
-from dotenv import load_dotenv
-from loguru import logger
 
 from cloud import Cloud
 from util import AuthorizationError, RequestError
-
-env_path = Path(__file__).parent / '.env'
-load_dotenv(env_path)
-PATH_LOG_FILE = os.getenv('PATH_FILE_LOG')
-
-logger.add(
-    f"{PATH_LOG_FILE}/cloud.log",
-    format="synchronization {time} {level} {message}",
-    level="INFO",
-    rotation="100 MB",
-)
+from add_logging import LoggingMeta
 
 
-class YandexCloud(Cloud):
+base_meta = type(Cloud)
+
+
+# Создаем новый метакласс, объединяющий оба поведения
+class CombinedMeta(base_meta, LoggingMeta):
+    pass
+
+
+class YandexCloud(Cloud, metaclass=CombinedMeta):
     """
     Класс для работы с яндекс облаком.
 
@@ -78,23 +72,20 @@ class YandexCloud(Cloud):
                         raise RequestError("Не получен URL для загрузки")
 
                 file_path = os.path.join(path, file_name)
-                file_size = os.path.getsize(file_path)
-                logger.info(
-                    f"Начинаем загрузку {file_name} "
-                    f"({file_size / 1024 / 1024:.2f} MB)"
-                )
 
                 async with aiofiles.open(file_path, 'rb') as f:
                     async with session.put(
                             upload_url,
                             data={"file": await f.read()},
                     ) as upload_response:
-                        if upload_response.status not in (
-                        HTTPStatus.OK, HTTPStatus.CREATED):
+                        if (upload_response.status not in (
+                            HTTPStatus.OK, HTTPStatus.CREATED
+                        )):
                             error = await upload_response.text()
                             raise RequestError(
                                 f"Ошибка загрузки файла: {error}"
                             )
+
         except aiohttp.ClientError as e:
             raise RequestError(f"Сетевая ошибка: {str(e)}")
 
@@ -121,7 +112,7 @@ class YandexCloud(Cloud):
                     f"{file_name}&overwrite=True")
         await self._save(url, path, file_name)
 
-    async def delete_file(self, filename: str) -> None:
+    async def delete_file(self, file_name: str) -> None:
         """
         Метод для удаления файла в облаке.
 
@@ -130,7 +121,7 @@ class YandexCloud(Cloud):
             пробрасываем исключение.
         """
         url: str = (f"{self.url}?path={self.name_folder_cloud}/"
-                    f"{filename}&force_async=False&permanently=False")
+                    f"{file_name}&force_async=False&permanently=False")
 
         async with aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(60)
@@ -141,7 +132,7 @@ class YandexCloud(Cloud):
                             HTTPStatus.NO_CONTENT, HTTPStatus.ACCEPTED
                         ]:
                             raise RequestError(
-                                f"Файл {filename} не был удален, "
+                                f"Файл {file_name} не был удален, "
                                 f"{(await response.json()).get('message')}"
                             )
 
@@ -214,8 +205,8 @@ class YandexCloud(Cloud):
                 if response.status == HTTPStatus.UNAUTHORIZED:
                     raise AuthorizationError(
                         f"{
-                        (await response.json()).get('message')
-                        } Проверьте ваш токен."
+                            (await response.json()).get('message')
+                            } Проверьте ваш токен."
                     )
 
                 elif response.status not in (

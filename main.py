@@ -15,7 +15,6 @@ from util import (
     AuthorizationError,
     check_path_exists,
     check_sleep_period,
-    RequestError,
     func_error_logging,
 )
 from yandex_cloud import YandexCloud
@@ -41,9 +40,6 @@ def connect_error(func: Callable) -> Callable:
         try:
             return await func(*args, **kwargs)
 
-        except RequestError as err:
-            logger.error(err)
-
         except (ClientConnectionError, ConnectionTimeoutError):
             await func_error_logging(func.__name__, args, logger)
 
@@ -59,7 +55,6 @@ async def delete_file(cloud: Any, file: str) -> bool:
     :return bool: Возвращаем True, нужно для подсчета удаленных файлов.
     """
     await cloud.delete_file(file)
-    logger.info(f"Файл {file}, был удален.")
     return True
 
 
@@ -80,9 +75,6 @@ async def cloud_load(
     try:
         await cloud.upload_file(path_on_pc, file) if not reload \
             else await cloud.update_file(path_on_pc, file)
-        logger.info(
-            f"Файл {file}, был {'перезаписан' if reload else 'сохранен'}."
-        )
         return True
     except PermissionError:
         logger.error(
