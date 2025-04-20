@@ -1,9 +1,9 @@
-from functools import wraps
-import inspect
-from pathlib import Path
 import os
-from typing import Callable
 import time
+import inspect as ins
+from functools import wraps
+from typing import Callable
+from pathlib import Path
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -32,7 +32,7 @@ class LoggingMeta(type):
         new_class = super().__new__(cls, name, bases, namespace)
 
         for attr_name, attr_value in namespace.items():
-            if inspect.isfunction(attr_value) and not attr_name.startswith('_'):
+            if ins.isfunction(attr_value) and not attr_name.startswith('_'):
                 setattr(
                     new_class, attr_name, cls._add_enhanced_logging(attr_value)
                     )

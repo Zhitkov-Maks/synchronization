@@ -58,6 +58,7 @@ class YandexCloud(Cloud, metaclass=CombinedMeta):
 
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
+                # Получение URL для загрузки
                 async with session.get(url, headers=self._headers) as response:
                     if response.status != HTTPStatus.OK:
                         error = await response.text()
@@ -65,22 +66,22 @@ class YandexCloud(Cloud, metaclass=CombinedMeta):
                             f"Ошибка получения URL загрузки: {error}"
                         )
 
-                    upload_data: dict = await response.json()
-                    upload_url: str = upload_data.get("href")
-
+                    upload_data = await response.json()
+                    upload_url = upload_data.get("href")
                     if not upload_url:
                         raise RequestError("Не получен URL для загрузки")
 
+                # Потоковая загрузка файла
                 file_path = os.path.join(path, file_name)
-
                 async with aiofiles.open(file_path, 'rb') as f:
                     async with session.put(
-                            upload_url,
-                            data={"file": await f.read()},
+                        upload_url,
+                        data=f,  # Потоковая передача
+                        headers={'Content-Type': 'application/octet-stream'}
                     ) as upload_response:
-                        if (upload_response.status not in (
+                        if upload_response.status not in (
                             HTTPStatus.OK, HTTPStatus.CREATED
-                        )):
+                        ):
                             error = await upload_response.text()
                             raise RequestError(
                                 f"Ошибка загрузки файла: {error}"
@@ -127,14 +128,15 @@ class YandexCloud(Cloud, metaclass=CombinedMeta):
                 timeout=aiohttp.ClientTimeout(60)
         ) as client:
             async with client.delete(
-                    url=url, headers=self._headers) as response:
-                        if response.status not in [
-                            HTTPStatus.NO_CONTENT, HTTPStatus.ACCEPTED
-                        ]:
-                            raise RequestError(
-                                f"Файл {file_name} не был удален, "
-                                f"{(await response.json()).get('message')}"
-                            )
+                    url=url, headers=self._headers
+                    ) as response:
+                if response.status not in [
+                    HTTPStatus.NO_CONTENT, HTTPStatus.ACCEPTED
+                ]:
+                    raise RequestError(
+                        f"Файл {file_name} не был удален, "
+                        f"{(await response.json()).get('message')}"
+                    )
 
     async def get_info(self) -> Dict[str, float]:
         """
