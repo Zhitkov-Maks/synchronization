@@ -1,16 +1,15 @@
 import os.path
 from datetime import datetime as dt
-from typing import Dict
 from http import HTTPStatus
+from typing import Dict
 
-import aiohttp
 import aiofiles
+import aiohttp
 from aiohttp import ClientTimeout
 
+from add_logging import LoggingMeta
 from cloud import Cloud
 from util import AuthorizationError, RequestError
-from add_logging import LoggingMeta
-
 
 base_meta = type(Cloud)
 
@@ -36,10 +35,11 @@ class YandexCloud(Cloud, metaclass=CombinedMeta):
 
     def __init__(self, token: str, name_folder_cloud: str):
         self.name_folder_cloud = name_folder_cloud
+        self._token = token
         self._headers = {
             "Content-type": "application/json",
             "Accept": "application/json",
-            "Authorization": f"OAuth {token}",
+            "Authorization": f"OAuth {self._token}",
         }
 
     async def _save(self, url: str, path: str, file_name: str) -> None:
@@ -113,7 +113,7 @@ class YandexCloud(Cloud, metaclass=CombinedMeta):
                     f"{file_name}&overwrite=True")
         await self._save(url, path, file_name)
 
-    async def delete_file(self, file_name: str) -> None:
+    async def delete_file(self, filename: str) -> None:
         """
         Метод для удаления файла в облаке.
 
@@ -122,7 +122,7 @@ class YandexCloud(Cloud, metaclass=CombinedMeta):
             пробрасываем исключение.
         """
         url: str = (f"{self.url}?path={self.name_folder_cloud}/"
-                    f"{file_name}&force_async=False&permanently=False")
+                    f"{filename}&force_async=False&permanently=False")
 
         async with aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(60)
@@ -134,7 +134,7 @@ class YandexCloud(Cloud, metaclass=CombinedMeta):
                     HTTPStatus.NO_CONTENT, HTTPStatus.ACCEPTED
                 ]:
                     raise RequestError(
-                        f"Файл {file_name} не был удален, "
+                        f"Файл {filename} не был удален, "
                         f"{(await response.json()).get('message')}"
                     )
 

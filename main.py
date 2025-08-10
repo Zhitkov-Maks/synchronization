@@ -157,7 +157,6 @@ async def synchronization(path_on_pc: str, cloud: Cloud):
             tasks.append(delete_file(cloud, filename))
 
     await asyncio.gather(*tasks)
-    return
 
 
 async def main():
@@ -166,10 +165,10 @@ async def main():
     бесконечный цикл.
     """
     # Получаем нужные данные для работы.
-    token: str = os.getenv("YANDEX_TOKEN")
-    sleep_period: str = os.getenv("SYNCHRONIZATION_PERIOD")
-    path_to_folder_on_pc: str = os.getenv("PATH_TO_FOLDER_ON_PC")
-    name_folder_cloud: str = os.getenv("NAME_FOLDER_CLOUD")
+    token: str = os.getenv("YANDEX_TOKEN", "")
+    sleep_period: str = os.getenv("SYNCHRONIZATION_PERIOD", "")
+    path_to_folder_on_pc: str = os.getenv("PATH_TO_FOLDER_ON_PC", "")
+    name_folder_cloud: str = os.getenv("NAME_FOLDER_CLOUD", "")
 
     # Инициализируем yandex
     yandex: Cloud = YandexCloud(token, name_folder_cloud)

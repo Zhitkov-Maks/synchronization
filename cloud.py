@@ -2,6 +2,11 @@ from abc import ABC, abstractmethod
 
 
 class Cloud(ABC):
+
+    def __init__(self, token: str, name_folder_cloud: str):
+        self.name_folder_cloud = name_folder_cloud
+        self._token = token
+
     @abstractmethod
     async def upload_file(self, path: str, file_name: str) -> None:
         """
